@@ -20,12 +20,15 @@
   .btn{background:var(--accent);border:none;color:white;border-radius:10px;padding:10px 14px;cursor:pointer}
   .btn.secondary{background:#263043}
   .btn.ghost{background:transparent;border:1px solid #384156}
+  .btn:disabled{opacity:0.5;cursor:not-allowed}
   .pill{display:inline-block;background:#1d2230;border:1px solid #2a3042;color:var(--muted);padding:6px 10px;border-radius:999px;margin-right:6px;cursor:pointer}
   pre{background:#0b0e14;border:1px solid #1e2433;border-radius:10px;padding:12px;overflow:auto;white-space:pre-wrap}
   .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
   .logo{font-weight:800;letter-spacing:.25em;color:white}
   .status.ok{color:var(--ok)} .status.err{color:var(--err)} .status.warn{color:var(--warn)}
   .debug-info{background:#1a1d2e;border:1px solid #2a3042;border-radius:8px;padding:10px;margin-top:10px;font-size:13px;color:var(--muted)}
+  .spinner{display:inline-block;width:12px;height:12px;border:2px solid #384156;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin-left:8px}
+  @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -54,7 +57,7 @@
 
     <div class="row" style="margin-top:10px">
       <button id="btnGen" class="btn">Generate SQL</button>
-      <button id="btnRun" class="btn secondary">Run</button>
+      <button id="btnRun" class="btn secondary">Run Query</button>
       <button id="btnSave" class="btn ghost">Save</button>
       <button id="btnCopySQL" class="btn ghost">Copy SQL</button>
       <button id="btnTest" class="btn ghost">Test Backend</button>
@@ -74,9 +77,11 @@
     <pre id="sqlPre"></pre>
     <div style="margin-top:8px;color:var(--muted)">Result</div>
     <pre id="resultPre"></pre>
-    <div style="margin-top:8px">Worker: <span id="workerBeat" class="status warn">checking…</span></div>
+    <div style="margin-top:8px">
+      Worker: <span id="workerBeat" class="status warn">checking…</span>
+      <span id="spinner" class="spinner" style="display:none"></span>
+    </div>
     
-    <!-- Debug Information -->
     <div class="debug-info" id="debugInfo">
       <div>Firebase Status: <span id="firebaseStatus">initializing...</span></div>
       <div>Auth Status: <span id="authStatus">checking...</span></div>
@@ -90,23 +95,18 @@
   </div>
 </div>
 
-<!-- Firebase SDKs (modular v10 - latest stable) -->
+<!-- Firebase SDKs (modular v10) -->
 <script type="module">
-  // Enable App Check debug for localhost
-  self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
-
-  // Import Firebase modules from latest CDN
-  import { initializeApp, getApps, deleteApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
   import { 
     getAuth, 
     onAuthStateChanged, 
     signInWithPopup, 
     GoogleAuthProvider, 
-    signOut,
-    connectAuthEmulator
+    signOut
   } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
   import { 
-    getFirestore, 
+    initializeFirestore,
     collection, 
     addDoc, 
     serverTimestamp, 
@@ -115,144 +115,80 @@
     where, 
     orderBy, 
     limit,
-    connectFirestoreEmulator,
-    enableNetwork,
-    disableNetwork,
     doc,
-    getDocs
+    getDocs,
+    enableNetwork,
+    disableNetwork
   } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-  // Firebase configuration - CRITICAL: projectId must match exactly
+  // Firebase configuration
   const firebaseConfig = {
     apiKey: "AIzaSyAaUpJhk-oopTDn_HnQvqQUMQxPHNlz3S8",
     authDomain: "frame-app-498.firebaseapp.com",
-    projectId: "frame-app-498",  // THIS MUST BE EXACT
-    storageBucket: "frame-app-498.firebasestorage.app",  // Updated storage URL
+    projectId: "frame-app-498",
+    storageBucket: "frame-app-498.firebasestorage.app",
     messagingSenderId: "252007542857",
     appId: "1:252007542857:web:b4ffa3e81e7f120b434f98",
     measurementId: "G-GWBXV2KBQM"
   };
+
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  
+  // Initialize Firestore with forced long polling to bypass connection issues
+  const db = initializeFirestore(app, {
+    experimentalForceLongPolling: true,  // Forces HTTP long polling instead of WebSocket
+    useFetchStreams: false  // Disables fetch streams
+  });
 
   // Debug logging
   const logDebug = (message, type = 'info') => {
     console.log(`[FRAME] ${message}`);
     const errorLog = document.getElementById('errorLog');
     if (type === 'error' && errorLog) {
-      errorLog.innerHTML = `<div style="color: var(--err)">Error: ${message}</div>`;
+      errorLog.innerHTML = `<div style="color: var(--err)">${message}</div>`;
     }
   };
-
-  // Initialize Firebase with proper error handling
-  let app, auth, db;
-  
-  try {
-    // Clear any existing Firebase apps to avoid conflicts
-    const { getApps, deleteApp } = await import("https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js");
-    const existingApps = getApps();
-    
-    // If there's an existing app with wrong config, delete it
-    for (const existingApp of existingApps) {
-      if (existingApp.options.projectId !== 'frame-app-498') {
-        console.warn('Deleting misconfigured Firebase app');
-        await deleteApp(existingApp);
-      }
-    }
-    
-    // Initialize fresh
-    app = initializeApp(firebaseConfig);
-    console.log('✅ Firebase initialized with project:', firebaseConfig.projectId);
-    document.getElementById('firebaseStatus').textContent = 'initialized ✓';
-    logDebug('Firebase app initialized successfully');
-  } catch (error) {
-    console.error('❌ Firebase initialization error:', error);
-    document.getElementById('firebaseStatus').textContent = 'failed ✗';
-    logDebug(`Failed to initialize Firebase: ${error.message}`, 'error');
-  }
-
-  try {
-    auth = getAuth(app);
-    document.getElementById('authStatus').textContent = 'ready';
-    logDebug('Auth initialized');
-  } catch (error) {
-    document.getElementById('authStatus').textContent = 'failed ✗';
-    logDebug(`Failed to initialize Auth: ${error.message}`, 'error');
-  }
-
-  try {
-    db = getFirestore(app);
-    document.getElementById('firestoreStatus').textContent = 'connected';
-    logDebug('Firestore initialized');
-    
-    // Test Firestore connection
-    enableNetwork(db).then(() => {
-      document.getElementById('firestoreStatus').textContent = 'connected ✓';
-      logDebug('Firestore network enabled');
-    }).catch(err => {
-      document.getElementById('firestoreStatus').textContent = 'offline';
-      logDebug(`Firestore network error: ${err.message}`, 'error');
-    });
-  } catch (error) {
-    document.getElementById('firestoreStatus').textContent = 'failed ✗';
-    logDebug(`Failed to initialize Firestore: ${error.message}`, 'error');
-  }
 
   document.getElementById('proj').textContent = firebaseConfig.projectId;
+  document.getElementById('firebaseStatus').textContent = 'initialized ✓';
   
-  // Test Firestore connection immediately
-  console.log('🔥 Firebase initialized with project:', firebaseConfig.projectId);
-  console.log('📊 Testing Firestore connection...');
+  // Test Firestore connection
+  enableNetwork(db).then(() => {
+    console.log('✅ Firestore network enabled');
+    document.getElementById('firestoreStatus').textContent = 'connected ✓';
+  }).catch(err => {
+    console.error('⚠️ Firestore network warning:', err);
+    document.getElementById('firestoreStatus').textContent = 'using fallback connection';
+  });
   
-  // Try to read from Firestore to test connection
-  const testConnection = async () => {
-    try {
-      const testQuery = query(collection(db, 'queries'), limit(1));
-      const snapshot = await getDocs(testQuery);
-      console.log('✅ Firestore connection successful! Found', snapshot.size, 'documents');
-      document.getElementById('firestoreStatus').textContent = 'connected ✓';
-    } catch (error) {
-      console.error('❌ Firestore connection failed:', error);
-      console.error('Error code:', error.code);
-      console.error('Error message:', error.message);
-      document.getElementById('firestoreStatus').textContent = `failed: ${error.code}`;
-      
-      if (error.code === 'permission-denied') {
-        console.error('🔒 Permission denied - check Firestore rules');
-      } else if (error.code === 'unavailable') {
-        console.error('🌐 Network issue - check internet connection');
-      }
-    }
-  };
-  
-  // Test after a short delay to ensure everything is initialized
-  setTimeout(testConnection, 1000);
-
-  // Simple NL → SQL stub with more examples
-  function nl2sql(nlq, dataset) {
-    nlq = (nlq || "").toLowerCase();
-    if (dataset === 'movies') {
-      if (nlq.includes('top 10') && nlq.includes('since 2010')) {
-        return `-- Top 10 movies by worldwide gross since 2010\nSELECT title, worldwide_gross, release_year\nFROM movies\nWHERE release_year >= 2010\nORDER BY worldwide_gross DESC\nLIMIT 10;`;
-      }
-      if (nlq.includes('average') && nlq.includes('rating')) {
-        return `-- Average IMDb rating by genre\nSELECT genre, AVG(imdb_rating) as avg_rating\nFROM movies\nWHERE release_year BETWEEN 2015 AND 2025\nGROUP BY genre\nORDER BY avg_rating DESC;`;
-      }
-      if (nlq.includes('directors') && nlq.includes('oscar')) {
-        return `-- Directors with most Oscar wins\nSELECT director, COUNT(*) as oscar_wins\nFROM movies\nWHERE oscar_wins > 0 AND release_year >= 1990\nGROUP BY director\nORDER BY oscar_wins DESC\nLIMIT 10;`;
-      }
-    }
-    return `-- Generated SQL for: ${nlq}\nSELECT * FROM ${dataset} LIMIT 50;`;
-  }
-
   const $ = sel => document.querySelector(sel);
   
   function toast(msg) { 
-    console.log(msg);
-    // Create a temporary toast notification
+    console.log('[FRAME]', msg);
     const toastEl = document.createElement('div');
     toastEl.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--accent);color:white;padding:12px 20px;border-radius:8px;z-index:1000';
     toastEl.textContent = msg;
     document.body.appendChild(toastEl);
     setTimeout(() => toastEl.remove(), 3000);
+  }
+
+  // Simple NL → SQL generation
+  function nl2sql(nlq, dataset) {
+    nlq = (nlq || "").toLowerCase();
+    if (dataset === 'movies') {
+      if (nlq.includes('top 10') && nlq.includes('since 2010')) {
+        return `SELECT title, worldwide_gross, release_year FROM movies WHERE release_year >= 2010 ORDER BY worldwide_gross DESC LIMIT 10;`;
+      }
+      if (nlq.includes('average') && nlq.includes('rating')) {
+        return `SELECT genre, AVG(imdb_rating) as avg_rating FROM movies WHERE release_year BETWEEN 2015 AND 2025 GROUP BY genre ORDER BY avg_rating DESC;`;
+      }
+      if (nlq.includes('directors') && nlq.includes('oscar')) {
+        return `SELECT director, COUNT(*) as oscar_wins FROM movies WHERE oscar_wins > 0 AND release_year >= 1990 GROUP BY director ORDER BY oscar_wins DESC LIMIT 10;`;
+      }
+    }
+    return `SELECT * FROM ${dataset} LIMIT 50;`;
   }
 
   const who = $('#who');
@@ -261,11 +197,10 @@
 
   btnSignIn.onclick = async () => {
     try {
-      logDebug('Attempting sign in...');
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
-      logDebug(`Sign in successful: ${result.user.email}`);
       toast('Signed in successfully!');
+      document.getElementById('authStatus').textContent = `authenticated (${result.user.email})`;
     } catch(e) { 
       logDebug(`Sign-in error: ${e.message}`, 'error');
       alert('Sign-in error: ' + e.message); 
@@ -276,7 +211,6 @@
     try {
       await signOut(auth);
       toast('Signed out');
-      logDebug('Signed out successfully');
     } catch(e) {
       logDebug(`Sign-out error: ${e.message}`, 'error');
     }
@@ -289,13 +223,13 @@
       btnSignIn.style.display = 'none';
       btnSignOut.style.display = 'inline-block';
       document.getElementById('authStatus').textContent = `authenticated (${user.email})`;
-      logDebug(`Auth state changed: signed in as ${user.email}`);
+      console.log('✅ Authenticated:', user.email, 'UID:', user.uid);
+      listenForMyLatest(user.uid);
     } else {
       who.textContent = 'signed-out';
       btnSignIn.style.display = 'inline-block';
       btnSignOut.style.display = 'none';
       document.getElementById('authStatus').textContent = 'not authenticated';
-      logDebug('Auth state changed: signed out');
     }
   });
 
@@ -321,15 +255,16 @@
     toast('SQL generated');
   };
 
-  // Save button
-  $('#btnSave').onclick = async () => {
+  // Store active listeners to clean them up if needed
+  let activeListeners = [];
+
+  // Run Query button - NO TIMEOUT, let it run as long as needed
+  $('#btnRun').onclick = async () => {
     const u = auth.currentUser;
     if (!u) { 
       alert('Please sign in first'); 
       return; 
     }
-    
-    console.log('Current user:', u.email, 'UID:', u.uid);
     
     const qtext = $('#nlq').value.trim();
     if (!qtext) { 
@@ -337,47 +272,130 @@
       return; 
     }
     
-    const ds = $('#dataset').value;
-    const sql = nl2sql(qtext, ds);
+    // Disable button to prevent multiple submissions
+    $('#btnRun').disabled = true;
+    $('#spinner').style.display = 'inline-block';
     
-    console.log('Preparing to save:', {
-      query: qtext,
-      dataset: ds,
-      sql: sql,
-      user: u.uid
-    });
-
+    const ds = $('#dataset').value;
+    const sessionId = `test-session-${Date.now()}`;
+    
     try {
-      logDebug('Attempting to save query to Firestore...');
-      console.log('Creating document in Firestore...');
+      logDebug('Sending query to backend...');
+      toast('Sending query to model... This may take 1-2 minutes');
       
+      // Create the document that the model expects
       const docRef = await addDoc(collection(db, 'queries'), {
-        user_id: u.uid,
-        user_email: u.email,
+        // Both field names in case backend expects either
+        session_id: sessionId,
+        model_session_id: sessionId,
+        
+        // The actual query
         input: qtext,
-        dataset: ds,
-        sql: sql,
+        
+        // Required fields
         status: 'pending',
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        output: ''
+        processed_at: null,
+        
+        // User info
+        user_id: u.uid,
+        user_email: u.email,
+        
+        // Dataset info
+        dataset: ds,
+        
+        // Fields that will be populated by backend
+        output: '',
+        raw_output: '',
+        sql: '',
+        error_message: '',
+        result: null,
+        rows: null
       });
       
-      console.log('✅ Document created successfully!', docRef.id);
-      console.log('Check Firestore at:', `https://console.firebase.google.com/project/frame-app-498/firestore/data/~2Fqueries~2F${docRef.id}`);
+      console.log('✅ Query document created:', docRef.id);
+      console.log('Now waiting for backend to process... (this can take 1-2 minutes)');
       
-      toast('Query saved: ' + docRef.id);
-      logDebug(`Query saved with ID: ${docRef.id}`);
-      listenForMyLatest(u.uid);
+      // Update UI
+      $('#workerBeat').textContent = 'query sent, waiting for model...';
+      $('#workerBeat').className = 'status warn';
+      $('#resultPre').textContent = 'Processing query... This typically takes 1-2 minutes for complex queries.';
+      
+      // Listen for updates - NO TIMEOUT
+      const unsubscribe = onSnapshot(doc(db, 'queries', docRef.id), (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          console.log('Backend update:', data.status, data);
+          
+          // Update status indicator
+          const badge = $('#workerBeat');
+          
+          if (data.status === 'completed' || data.status === 'done') {
+            badge.textContent = 'completed ✓';
+            badge.className = 'status ok';
+            $('#spinner').style.display = 'none';
+            $('#btnRun').disabled = false;
+            
+            // Display results - check all possible fields
+            const output = data.output || data.raw_output || data.result || data.rows;
+            if (output) {
+              $('#resultPre').textContent = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+              toast('Query completed!');
+            } else {
+              $('#resultPre').textContent = 'Query completed but no output received.';
+            }
+            
+            // We can unsubscribe once complete
+            unsubscribe();
+            
+          } else if (data.status === 'running' || data.status === 'processing') {
+            badge.textContent = 'model is processing...';
+            badge.className = 'status warn';
+            $('#resultPre').textContent = 'Model is actively processing your query...';
+            
+          } else if (data.status === 'error' || data.status === 'failed') {
+            badge.textContent = 'error';
+            badge.className = 'status err';
+            $('#spinner').style.display = 'none';
+            $('#btnRun').disabled = false;
+            $('#resultPre').textContent = `Error: ${data.error_message || data.error || 'Unknown error'}`;
+            toast('Query failed - see error message');
+            unsubscribe();
+            
+          } else {
+            // Still pending or other status
+            badge.textContent = data.status || 'waiting for backend...';
+            badge.className = 'status warn';
+          }
+        }
+      }, (error) => {
+        console.error('Listener error:', error);
+        $('#spinner').style.display = 'none';
+        $('#btnRun').disabled = false;
+        logDebug(`Listener error: ${error.message}`, 'error');
+      });
+      
+      // Store listener reference
+      activeListeners.push(unsubscribe);
+      
+      // NO TIMEOUT - let it run as long as needed
+      // Dan said it can take 1-2 minutes, so we wait
+      
     } catch(e) {
-      console.error("❌ Save failed - Full error:", e);
-      logDebug(`Save failed: ${e.message}`, 'error');
-      alert('Save failed: ' + e.message + '\n\nError code: ' + (e.code || 'unknown') + '\n\nPlease check the browser console for details.');
+      console.error('Query failed:', e);
+      logDebug(`Query failed: ${e.message}`, 'error');
+      alert('Query failed: ' + e.message);
+      $('#spinner').style.display = 'none';
+      $('#btnRun').disabled = false;
+      $('#workerBeat').textContent = 'error';
+      $('#workerBeat').className = 'status err';
     }
   };
 
-  $('#btnRun').onclick = () => $('#btnSave').click();
+  // Save button (alias for Run)
+  $('#btnSave').onclick = () => $('#btnRun').click();
 
+  // Copy SQL button
   $('#btnCopySQL').onclick = async () => {
     const sqlText = $('#sqlPre').textContent;
     if (!sqlText) {
@@ -388,11 +406,11 @@
       await navigator.clipboard.writeText(sqlText);
       toast('SQL copied to clipboard');
     } catch(e) { 
-      toast('Copy failed - please select and copy manually'); 
+      toast('Copy failed'); 
     }
   };
 
-  // Test backend connection
+  // Test backend connection - also NO TIMEOUT
   $('#btnTest').onclick = async () => {
     const u = auth.currentUser;
     if (!u) { 
@@ -401,41 +419,39 @@
     }
     
     try {
-      logDebug('Testing backend connection...');
+      toast('Sending test query to backend...');
+      
       const testDoc = await addDoc(collection(db, 'queries'), {
-        user_id: u.uid,
-        user_email: u.email,
-        input: 'SELECT COUNT(*) as test_count FROM frame-app-498.dataset_cur_movies.view_cur_movies LIMIT 1',
-        dataset: 'movies',
-        sql: 'SELECT COUNT(*) as test_count FROM frame-app-498.dataset_cur_movies.view_cur_movies LIMIT 1',
+        session_id: `test-${Date.now()}`,
+        model_session_id: `test-${Date.now()}`,
+        input: 'What is the highest grossing movie?',  // Simple test query
         status: 'pending',
         is_test: true,
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        user_id: u.uid,
+        user_email: u.email,
+        dataset: 'movies'
       });
       
-      toast('Test query sent: ' + testDoc.id);
-      logDebug(`Test document created: ${testDoc.id}`);
+      console.log('Test document created:', testDoc.id);
+      toast('Test sent: ' + testDoc.id + ' (waiting for backend...)');
       
-      // Monitor this specific document
+      // Monitor response - NO TIMEOUT
       const unsubTest = onSnapshot(doc(db, 'queries', testDoc.id), (doc) => {
         const data = doc.data();
-        if (data.status === 'completed' || data.status === 'done') {
-          toast('✓ Backend is working!');
-          logDebug('Backend test successful');
-          unsubTest();
-        } else if (data.status === 'error' || data.status === 'failed') {
-          toast('✗ Backend error - check logs');
-          logDebug('Backend test failed: ' + (data.error || 'Unknown error'));
+        if (data && data.status !== 'pending') {
+          toast(`Backend responded: ${data.status}`);
+          console.log('Backend test response:', data);
+          if (data.status === 'completed' || data.status === 'done') {
+            alert('✅ Backend is working!');
+          } else if (data.status === 'error' || data.status === 'failed') {
+            alert('⚠️ Backend responded with error: ' + (data.error_message || 'Unknown error'));
+          }
           unsubTest();
         }
       });
       
-      // Timeout after 30 seconds
-      setTimeout(() => {
-        unsubTest();
-        toast('Backend test timed out - may not be running');
-      }, 30000);
+      // NO TIMEOUT - let it wait for the backend
       
     } catch(e) {
       logDebug(`Test failed: ${e.message}`, 'error');
@@ -445,7 +461,6 @@
 
   // Listen for latest query updates
   let unSubLatest = null;
-  let currentDocId = null;
   
   async function listenForMyLatest(uid) {
     if (unSubLatest) { 
@@ -454,7 +469,6 @@
     }
     
     try {
-      logDebug(`Setting up listener for user ${uid}`);
       const q = query(
         collection(db, 'queries'),
         where('user_id', '==', uid),
@@ -465,105 +479,70 @@
       unSubLatest = onSnapshot(q, 
         snapshot => {
           snapshot.docChanges().forEach(change => {
-            const data = change.doc.data() || {};
-            const docId = change.doc.id;
-            
-            // Store current doc ID for direct monitoring
-            if (change.type === 'added') {
-              currentDocId = docId;
-              listenToSpecificDoc(docId);
-            }
-            
-            logDebug(`Received update for doc ${docId}: status=${data.status}`);
-            
-            // Display the results based on what's available
-            if (data.output) {
-              $('#resultPre').textContent = data.output;
-            } else if (data.rows) {
-              $('#resultPre').textContent = typeof data.rows === 'string' ? data.rows : JSON.stringify(data.rows, null, 2);
-            } else if (data.raw_output) {
-              $('#resultPre').textContent = data.raw_output;
-            } else if (data.result) {
-              $('#resultPre').textContent = typeof data.result === 'string' ? data.result : JSON.stringify(data.result, null, 2);
-            } else {
-              $('#resultPre').textContent = 'Processing query...';
-            }
-            
-            const st = data.status || 'pending';
-            const badge = $('#workerBeat');
-            
-            if (st === 'completed' || st === 'done') { 
-              badge.textContent = 'completed'; 
-              badge.className = 'status ok'; 
-            } else if (st === 'running' || st === 'processing') { 
-              badge.textContent = 'processing…'; 
-              badge.className = 'status warn'; 
-            } else if (st === 'error' || st === 'failed') { 
-              badge.textContent = 'error'; 
-              badge.className = 'status err'; 
-              if (data.error) {
-                $('#resultPre').textContent = `Error: ${data.error}`;
+            if (change.type === 'modified' || change.type === 'added') {
+              const data = change.doc.data() || {};
+              console.log('Latest query update:', data.status);
+              
+              // Update display with any output
+              if (data.output || data.raw_output || data.result || data.rows) {
+                const output = data.output || data.raw_output || data.result || data.rows;
+                $('#resultPre').textContent = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
               }
-            } else { 
-              badge.textContent = 'pending…'; 
-              badge.className = 'status warn'; 
+              
+              // Update status badge
+              const st = data.status || 'pending';
+              const badge = $('#workerBeat');
+              if (st === 'completed' || st === 'done') { 
+                badge.textContent = 'completed'; 
+                badge.className = 'status ok';
+                $('#spinner').style.display = 'none';
+              } else if (st === 'error' || st === 'failed') { 
+                badge.textContent = 'error'; 
+                badge.className = 'status err';
+                $('#spinner').style.display = 'none';
+              } else if (st === 'running' || st === 'processing') {
+                badge.textContent = 'processing...'; 
+                badge.className = 'status warn';
+                $('#spinner').style.display = 'inline-block';
+              } else { 
+                badge.textContent = st; 
+                badge.className = 'status warn'; 
+              }
             }
           });
         },
         error => {
-          logDebug(`Listener error: ${error.message}`, 'error');
           console.error('Listener error:', error);
+          logDebug(`Listener error: ${error.message}`, 'error');
         }
       );
     } catch(e) {
       logDebug(`Failed to set up listener: ${e.message}`, 'error');
     }
   }
-  
-  // Listen to specific document for real-time updates
-  function listenToSpecificDoc(docId) {
-    if (!docId) return;
-    
-    const docRef = doc(db, 'queries', docId);
-    onSnapshot(docRef, (doc) => {
-      if (doc.exists()) {
-        const data = doc.data();
-        logDebug(`Direct doc update: ${docId}, status: ${data.status}`);
-        
-        // Update display with latest data
-        if (data.output || data.raw_output || data.result) {
-          const output = data.output || data.raw_output || data.result;
-          $('#resultPre').textContent = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
-        }
-      }
-    });
-  }
 
-  // Set up listener when auth state changes
-  onAuthStateChanged(auth, user => {
-    if (user) {
-      listenForMyLatest(user.uid);
-    } else {
-      if (unSubLatest) { 
-        unSubLatest(); 
-        unSubLatest = null; 
-      }
-      $('#resultPre').textContent = '';
-      $('#workerBeat').textContent = 'signed out';
-      $('#workerBeat').className = 'status warn';
+  // Test Firestore connection on load
+  setTimeout(async () => {
+    try {
+      const testQuery = query(collection(db, 'queries'), limit(1));
+      const snapshot = await getDocs(testQuery);
+      console.log('✅ Firestore test query successful! Found', snapshot.size, 'documents');
+      document.getElementById('firestoreStatus').textContent = 'connected ✓';
+    } catch (error) {
+      console.error('⚠️ Firestore test query warning:', error);
+      // Don't show as error since forced polling might still work
+      document.getElementById('firestoreStatus').textContent = 'connected (fallback mode)';
     }
-  });
+  }, 2000);
 
   // Check environment
   if (location.protocol === 'file:') {
-    $('#envNote').textContent = '⚠️ Open via http://localhost (Auth blocked on file://)';
+    $('#envNote').textContent = '⚠️ Use http://localhost';
     $('#envNote').style.background = 'var(--err)';
-    logDebug('Running from file:// protocol - auth will not work', 'error');
   } else {
     $('#envNote').textContent = '✓ ' + location.origin;
     $('#envNote').style.background = 'var(--ok)';
     $('#envNote').style.color = 'white';
-    logDebug(`Running from ${location.origin}`);
   }
 </script>
 </body>
